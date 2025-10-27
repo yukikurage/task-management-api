@@ -1,0 +1,1182 @@
+openapi: 3.0.3
+info:
+  title: Task Management API
+  description: RESTful API for managing tasks and user assignments
+  version: 1.0.0
+  contact:
+    name: API Support
+
+servers:
+  - url: http://localhost:8080
+    description: Local development server
+
+tags:
+  - name: Health
+    description: Health check endpoints
+  - name: Auth
+    description: Authentication and user management
+  - name: Organizations
+    description: Organization and team management
+  - name: Tasks
+    description: Task management operations
+
+paths:
+  /health:
+    get:
+      tags:
+        - Health
+      summary: Health check
+      description: Check if the API is running
+      operationId: healthCheck
+      security: []
+      responses:
+        "200":
+          description: API is healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+                    example: ok
+                  message:
+                    type: string
+                    example: Task Management API is running
+
+  /api/auth/signup:
+    post:
+      tags:
+        - Auth
+      summary: User registration
+      description: Create a new user account
+      operationId: signup
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+                password:
+                  type: string
+                  format: password
+                  minLength: 8
+                  example: password123
+      responses:
+        "201":
+          description: User created successfully, personal organization auto-created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Email already exists
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/login:
+    post:
+      tags:
+        - Auth
+      summary: User login
+      description: Authenticate user and create session
+      operationId: login
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - email
+                - password
+              properties:
+                email:
+                  type: string
+                  format: email
+                  example: user@example.com
+                password:
+                  type: string
+                  format: password
+                  example: password123
+      responses:
+        "200":
+          description: Login successful
+          headers:
+            Set-Cookie:
+              schema:
+                type: string
+                example: session=abc123; Path=/; HttpOnly
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Invalid email or password
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/auth/logout:
+    post:
+      tags:
+        - Auth
+      summary: User logout
+      description: Destroy user session
+      operationId: logout
+      security:
+        - cookieAuth: []
+      responses:
+        "200":
+          description: Logout successful
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Logged out successfully
+
+  /api/auth/me:
+    get:
+      tags:
+        - Auth
+      summary: Get current user
+      description: Get authenticated user information
+      operationId: getCurrentUser
+      security:
+        - cookieAuth: []
+      responses:
+        "200":
+          description: User information
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/User"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: User not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/organizations:
+    post:
+      tags:
+        - Organizations
+      summary: Create organization
+      description: Create a new organization with auto-generated invite code
+      operationId: createOrganization
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+              properties:
+                name:
+                  type: string
+                  example: My Team
+      responses:
+        "201":
+          description: Organization created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Organization"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    get:
+      tags:
+        - Organizations
+      summary: List organizations
+      description: Get all organizations the user is a member of
+      operationId: listOrganizations
+      security:
+        - cookieAuth: []
+      responses:
+        "200":
+          description: List of organizations with user role
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organizations:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrganizationWithRole"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/organizations/join:
+    post:
+      tags:
+        - Organizations
+      summary: Join organization
+      description: Join an organization using invite code
+      operationId: joinOrganization
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - invite_code
+              properties:
+                invite_code:
+                  type: string
+                  example: "5dc6-6411-e229"
+      responses:
+        "200":
+          description: Successfully joined organization
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Successfully joined organization
+                  organization:
+                    $ref: "#/components/schemas/Organization"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Invalid invite code
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "409":
+          description: Already a member of this organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/organizations/{id}:
+    get:
+      tags:
+        - Organizations
+      summary: Get organization
+      description: Get organization details including members
+      operationId: getOrganization
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Organization ID
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Organization details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  organization:
+                    $ref: "#/components/schemas/Organization"
+                  members:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/OrganizationMember"
+                  your_role:
+                    type: string
+                    enum: [owner, member]
+                    example: owner
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Organization not found or access denied
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    put:
+      tags:
+        - Organizations
+      summary: Update organization
+      description: Update organization name (owner only)
+      operationId: updateOrganization
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Organization ID
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - name
+              properties:
+                name:
+                  type: string
+                  example: Updated Team Name
+      responses:
+        "200":
+          description: Organization updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Organization"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Only organization owners can perform this action
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Organization not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    delete:
+      tags:
+        - Organizations
+      summary: Delete organization
+      description: Delete organization and all its tasks (owner only)
+      operationId: deleteOrganization
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Organization ID
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Organization deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Organization deleted successfully
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Only organization owners can perform this action
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Organization not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/organizations/{id}/regenerate-code:
+    post:
+      tags:
+        - Organizations
+      summary: Regenerate invite code
+      description: Generate new invite code for organization (owner only)
+      operationId: regenerateInviteCode
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Organization ID
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Invite code regenerated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Organization"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Only organization owners can perform this action
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Organization not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/organizations/{id}/members/{user_id}:
+    delete:
+      tags:
+        - Organizations
+      summary: Remove member
+      description: Remove a member from organization (owner only)
+      operationId: removeMember
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Organization ID
+          schema:
+            type: integer
+            format: int64
+        - name: user_id
+          in: path
+          required: true
+          description: User ID to remove
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Member removed successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Member removed successfully
+        "400":
+          description: Cannot remove yourself
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Only organization owners can perform this action
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Organization not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/tasks:
+    get:
+      tags:
+        - Tasks
+      summary: List tasks
+      description: Get all tasks in organizations the user is a member of
+      operationId: listTasks
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: organization_id
+          in: query
+          description: Filter tasks by organization ID (optional)
+          schema:
+            type: integer
+            format: int64
+        - name: page
+          in: query
+          description: Page number
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: limit
+          in: query
+          description: Number of items per page
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 10
+      responses:
+        "200":
+          description: List of tasks
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Task"
+                  pagination:
+                    $ref: "#/components/schemas/Pagination"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    post:
+      tags:
+        - Tasks
+      summary: Create task
+      description: Create a new task in an organization
+      operationId: createTask
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - title
+                - organization_id
+              properties:
+                title:
+                  type: string
+                  example: Complete project documentation
+                description:
+                  type: string
+                  example: Write comprehensive API documentation
+                due_date:
+                  type: string
+                  format: date-time
+                  example: 2025-12-31T23:59:59Z
+                organization_id:
+                  type: integer
+                  format: int64
+                  example: 1
+      responses:
+        "201":
+          description: Task created successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: You are not a member of this organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/tasks/{id}:
+    get:
+      tags:
+        - Tasks
+      summary: Get task
+      description: Get a specific task by ID
+      operationId: getTask
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Task ID
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Task details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Task not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    patch:
+      tags:
+        - Tasks
+      summary: Update task (partial update)
+      description: |
+        Update task fields. Only fields included in the request body will be updated.
+        Omitted fields will keep their current values.
+        To clear due_date, explicitly send null.
+      operationId: updateTask
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Task ID
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                  example: Updated task title
+                description:
+                  type: string
+                  example: Updated description
+                due_date:
+                  type: string
+                  format: date-time
+                  nullable: true
+                  example: 2025-12-31T23:59:59Z
+            examples:
+              updateTitle:
+                summary: Update only title
+                value:
+                  title: "New Title"
+              updateMultiple:
+                summary: Update multiple fields
+                value:
+                  title: "New Title"
+                  description: "New Description"
+                  due_date: "2025-12-31T23:59:59Z"
+              clearDueDate:
+                summary: Clear due date
+                value:
+                  due_date: null
+      responses:
+        "200":
+          description: Task updated successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Task not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+    delete:
+      tags:
+        - Tasks
+      summary: Delete task
+      description: Delete a task (only creator can delete)
+      operationId: deleteTask
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Task ID
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Task deleted successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Task deleted successfully
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Only creator can delete task
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Task not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/tasks/{id}/assign:
+    post:
+      tags:
+        - Tasks
+      summary: Assign users to task
+      description: Assign one or more users to a task (only creator can assign)
+      operationId: assignTask
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Task ID
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - user_ids
+              properties:
+                user_ids:
+                  type: array
+                  items:
+                    type: integer
+                    format: int64
+                  example: [2, 3, 4]
+      responses:
+        "200":
+          description: Users assigned successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Only creator can assign users
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Task not found or user not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/tasks/{id}/unassign:
+    post:
+      tags:
+        - Tasks
+      summary: Unassign users from task
+      description: Remove user assignments from a task (only creator can unassign)
+      operationId: unassignTask
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Task ID
+          schema:
+            type: integer
+            format: int64
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - user_ids
+              properties:
+                user_ids:
+                  type: array
+                  items:
+                    type: integer
+                    format: int64
+                  example: [2, 3]
+      responses:
+        "200":
+          description: Users unassigned successfully
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Task"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Only creator can unassign users
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Task not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+components:
+  securitySchemes:
+    cookieAuth:
+      type: apiKey
+      in: cookie
+      name: session
+
+  schemas:
+    User:
+      type: object
+      required:
+        - id
+        - email
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 1
+        email:
+          type: string
+          format: email
+          example: user@example.com
+        created_at:
+          type: string
+          format: date-time
+          example: 2025-01-01T00:00:00Z
+        updated_at:
+          type: string
+          format: date-time
+          example: 2025-01-01T00:00:00Z
+
+    Organization:
+      type: object
+      required:
+        - id
+        - name
+        - invite_code
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 1
+        name:
+          type: string
+          example: My Team
+        invite_code:
+          type: string
+          example: "5dc6-6411-e229"
+        created_at:
+          type: string
+          format: date-time
+          example: 2025-01-01T00:00:00Z
+        updated_at:
+          type: string
+          format: date-time
+          example: 2025-01-01T00:00:00Z
+
+    OrganizationWithRole:
+      allOf:
+        - $ref: "#/components/schemas/Organization"
+        - type: object
+          required:
+            - role
+          properties:
+            role:
+              type: string
+              enum: [owner, member]
+              example: owner
+
+    OrganizationMember:
+      type: object
+      required:
+        - organization_id
+        - user_id
+        - role
+        - joined_at
+      properties:
+        organization_id:
+          type: integer
+          format: int64
+          example: 1
+        user_id:
+          type: integer
+          format: int64
+          example: 2
+        role:
+          type: string
+          enum: [owner, member]
+          example: member
+        joined_at:
+          type: string
+          format: date-time
+          example: 2025-01-01T00:00:00Z
+        user:
+          description: User object (only included when explicitly loaded)
+          $ref: "#/components/schemas/User"
+
+    Task:
+      type: object
+      required:
+        - id
+        - title
+        - description
+        - creator_id
+        - organization_id
+        - created_at
+        - updated_at
+      properties:
+        id:
+          type: integer
+          format: int64
+          example: 1
+        title:
+          type: string
+          example: Complete project documentation
+        description:
+          type: string
+          example: Write comprehensive API documentation
+        due_date:
+          type: string
+          format: date-time
+          nullable: true
+          description: Optional due date for the task. Can be null.
+          example: 2025-12-31T23:59:59Z
+        creator_id:
+          type: integer
+          format: int64
+          example: 1
+        organization_id:
+          type: integer
+          format: int64
+          example: 1
+        created_at:
+          type: string
+          format: date-time
+          example: 2025-01-01T00:00:00Z
+        updated_at:
+          type: string
+          format: date-time
+          example: 2025-01-01T00:00:00Z
+        creator:
+          description: Task creator user object (only included when explicitly loaded)
+          $ref: "#/components/schemas/User"
+        organization:
+          description: Organization object (only included when explicitly loaded)
+          $ref: "#/components/schemas/Organization"
+        assignments:
+          type: array
+          description: List of task assignments (only included when explicitly loaded)
+          items:
+            $ref: "#/components/schemas/TaskAssignment"
+
+    TaskAssignment:
+      type: object
+      required:
+        - task_id
+        - user_id
+        - created_at
+      properties:
+        task_id:
+          type: integer
+          format: int64
+          example: 1
+        user_id:
+          type: integer
+          format: int64
+          example: 2
+        created_at:
+          type: string
+          format: date-time
+          example: 2025-01-01T00:00:00Z
+        user:
+          description: User object (only included when explicitly loaded)
+          $ref: "#/components/schemas/User"
+
+    Pagination:
+      type: object
+      required:
+        - page
+        - limit
+        - total
+      properties:
+        page:
+          type: integer
+          example: 1
+        limit:
+          type: integer
+          example: 10
+        total:
+          type: integer
+          format: int64
+          example: 42
+
+    Error:
+      type: object
+      required:
+        - error
+      properties:
+        error:
+          type: string
+          example: Error message describing what went wrong
