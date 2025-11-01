@@ -174,6 +174,13 @@ func (h *TaskHandler) UpdateTask(c *gin.Context) {
 
 	updateInput := services.UpdateTaskInput{}
 
+	userID, exists := middleware.GetUserID(c)
+	if !exists {
+		apierrors.Unauthorized(c, "Not authenticated")
+		return
+	}
+	updateInput.ActorID = userID
+
 	if titleVal, exists := raw["title"]; exists {
 		title, ok := titleVal.(string)
 		if !ok {

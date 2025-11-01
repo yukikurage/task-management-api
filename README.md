@@ -24,10 +24,10 @@
 - `GET /tasks` — フィルタやページネーション付きでタスク一覧を取得する
 - `POST /tasks` — タスクを作成し、作成者を自動でアサインする
 - `GET /tasks/:id` — 単一タスクの詳細を取得する
-- `PUT /tasks/:id` — タスクの内容や期限を更新する
+- `PUT /tasks/:id` — タスクの内容や期限を更新する（作成者のみ）
 - `DELETE /tasks/:id` — タスクを削除する（作成者のみ）
-- `POST /tasks/:id/assign` — タスクにユーザーを追加でアサインする
-- `POST /tasks/:id/unassign` — タスクからユーザーのアサインを解除する
+- `POST /tasks/:id/assign` — タスクにユーザーを追加でアサインする（作成者のみ）
+- `POST /tasks/:id/unassign` — タスクからユーザーのアサインを解除する（作成者のみ）
 - `POST /tasks/:id/toggle-status` — TODO/DONE のステータスを切り替える
 - `POST /tasks/generate` — AI でタスク候補を生成する（保存はフロントエンド側で実行する必要がある）
 
