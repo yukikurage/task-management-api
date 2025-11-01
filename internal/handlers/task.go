@@ -353,8 +353,7 @@ func (h *TaskHandler) GenerateTasks(c *gin.Context) {
 	}
 
 	type GenerateTasksRequest struct {
-		Text           string `json:"text" binding:"required"`
-		OrganizationID uint64 `json:"organization_id" binding:"required"`
+		Text string `json:"text" binding:"required"`
 	}
 
 	var req GenerateTasksRequest
@@ -367,9 +366,8 @@ func (h *TaskHandler) GenerateTasks(c *gin.Context) {
 	defer cancel()
 
 	tasks, err := h.taskService.GenerateTasks(ctx, services.GenerateTasksInput{
-		Text:           req.Text,
-		OrganizationID: req.OrganizationID,
-		CreatorID:      userID,
+		Text:      req.Text,
+		CreatorID: userID,
 	})
 	if err != nil {
 		respondTaskError(c, err, "Failed to generate tasks")

@@ -325,19 +325,14 @@ func (s *TaskService) ToggleTaskStatus(taskID, actorID uint64) (*models.Task, er
 
 // GenerateTasksInput represents input for AI task generation
 type GenerateTasksInput struct {
-	Text           string
-	OrganizationID uint64
-	CreatorID      uint64
+	Text      string
+	CreatorID uint64
 }
 
 // GenerateTasks uses AI to generate tasks from text
 func (s *TaskService) GenerateTasks(ctx context.Context, input GenerateTasksInput) ([]GeneratedTask, error) {
 	if s.aiService == nil {
 		return nil, ErrAIServiceNotConfigured
-	}
-
-	if err := s.ensureOrganizationMember(input.OrganizationID, input.CreatorID); err != nil {
-		return nil, err
 	}
 
 	aiTasks, err := s.aiService.GenerateTasksFromText(ctx, input.Text)

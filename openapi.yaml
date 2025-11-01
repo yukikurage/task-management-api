@@ -709,15 +709,10 @@ paths:
               type: object
               required:
                 - text
-                - organization_id
               properties:
                 text:
                   type: string
                   example: "プロジェクトの要件定義を作成し、チームメンバーに共有する。来週までにデザインモックアップを完成させる。"
-                organization_id:
-                  type: integer
-                  format: int64
-                  example: 1
       responses:
         "200":
           description: Tasks generated successfully
