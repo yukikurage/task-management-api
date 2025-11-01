@@ -13,7 +13,7 @@
 ### 認証
 
 - `POST /auth/signup` — 新しいユーザーを登録し、セッションを開始する
-- `POST /auth/login` — メールアドレスとパスワードでログインする
+- `POST /auth/login` — ユーザー名とパスワードでログインする
 - `POST /auth/logout` — 現在のセッションを終了する
 - `GET /auth/me` — 現在ログイン中のユーザー情報を取得する
 
