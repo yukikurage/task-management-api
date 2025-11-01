@@ -39,20 +39,21 @@ func (s *AIService) GenerateTasksFromText(ctx context.Context, text string) ([]G
 テキスト:
 %s
 
-以下のJSON形式で、抽出したタスクの配列を返してください:
-[
-  {
-    "title": "タスクのタイトル（簡潔に）",
-    "description": "タスクの詳細説明",
-    "due_date": "期限（ISO8601形式、例: 2025-10-28T23:59:59Z）。期限が明示されていない場合はnull"
-  }
-]
+以下のJSON形式で、抽出したタスクを返してください:
+{
+  "tasks": [
+    {
+      "title": "タスクのタイトル（簡潔に）",
+      "description": "タスクの詳細説明",
+      "due_date": "期限（ISO8601形式、例: 2025-10-28T23:59:59Z）。期限が明示されていない場合はnull"
+    }
+  ]
+}
 
 注意事項:
-- タスクが1つもない場合は空の配列 [] を返してください
+- タスクが1つもない場合は空の配列を含むJSONオブジェクト {"tasks": []} を返してください
 - 期限は相対的な表現（「明日」「来週」など）を具体的な日時に変換してください
-- due_dateは必ずISO8601形式の文字列、またはnullにしてください
-- JSONのみを返し、説明文は含めないでください`, currentTime, text)
+- due_dateは必ずISO8601形式の文字列、またはnullにしてください`, currentTime, text)
 
 	resp, err := s.client.CreateChatCompletion(
 		ctx,
@@ -65,6 +66,9 @@ func (s *AIService) GenerateTasksFromText(ctx context.Context, text string) ([]G
 				},
 			},
 			Temperature: 0.3,
+			ResponseFormat: &openai.ChatCompletionResponseFormat{
+				Type: openai.ChatCompletionResponseFormatTypeJSONObject,
+			},
 		},
 	)
 
@@ -78,10 +82,13 @@ func (s *AIService) GenerateTasksFromText(ctx context.Context, text string) ([]G
 
 	content := resp.Choices[0].Message.Content
 
-	var tasks []GeneratedTask
-	if err := json.Unmarshal([]byte(content), &tasks); err != nil {
+	// Parse the response which is wrapped in a JSON object with "tasks" field
+	var response struct {
+		Tasks []GeneratedTask `json:"tasks"`
+	}
+	if err := json.Unmarshal([]byte(content), &response); err != nil {
 		return nil, fmt.Errorf("failed to parse AI response: %w (response: %s)", err, content)
 	}
 
-	return tasks, nil
+	return response.Tasks, nil
 }

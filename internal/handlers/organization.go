@@ -1,27 +1,36 @@
 package handlers
 
 import (
+	"errors"
 	"net/http"
-	"time"
+	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/yukikurage/task-management-api/internal/database"
+	"github.com/yukikurage/task-management-api/internal/constants"
+	"github.com/yukikurage/task-management-api/internal/dto"
+	apierrors "github.com/yukikurage/task-management-api/internal/errors"
 	"github.com/yukikurage/task-management-api/internal/middleware"
 	"github.com/yukikurage/task-management-api/internal/models"
-	"github.com/yukikurage/task-management-api/internal/utils"
+	"github.com/yukikurage/task-management-api/internal/services"
 )
 
-type OrganizationHandler struct{}
-
-func NewOrganizationHandler() *OrganizationHandler {
-	return &OrganizationHandler{}
+// OrganizationHandler handles HTTP requests for organizations.
+type OrganizationHandler struct {
+	orgService *services.OrganizationService
 }
 
-// CreateOrganization creates a new organization
+// NewOrganizationHandler creates a new OrganizationHandler.
+func NewOrganizationHandler(orgService *services.OrganizationService) *OrganizationHandler {
+	return &OrganizationHandler{
+		orgService: orgService,
+	}
+}
+
+// CreateOrganization creates a new organization for the authenticated user.
 func (h *OrganizationHandler) CreateOrganization(c *gin.Context) {
 	userID, exists := middleware.GetUserID(c)
 	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
+		apierrors.Unauthorized(c, "Not authenticated")
 		return
 	}
 
@@ -31,114 +40,76 @@ func (h *OrganizationHandler) CreateOrganization(c *gin.Context) {
 
 	var req CreateOrgRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		apierrors.BadRequest(c, "Invalid request body")
 		return
 	}
 
-	// Generate invite code
-	inviteCode, err := utils.GenerateInviteCode()
+	org, err := h.orgService.CreateOrganization(services.CreateOrganizationInput{
+		Name:    req.Name,
+		OwnerID: userID,
+	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate invite code"})
+		respondOrganizationError(c, err, "Failed to create organization")
 		return
 	}
 
-	// Create organization
-	org := models.Organization{
-		Name:       req.Name,
-		InviteCode: inviteCode,
-	}
-
-	if err := database.GetDB().Create(&org).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create organization"})
-		return
-	}
-
-	// Add creator as owner
-	member := models.OrganizationMember{
-		OrganizationID: org.ID,
-		UserID:         userID,
-		Role:           models.RoleOwner,
-		JoinedAt:       time.Now(),
-	}
-
-	if err := database.GetDB().Create(&member).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to add user to organization"})
-		return
-	}
-
-	c.JSON(http.StatusCreated, org)
+	orgDTO := dto.ToOrganizationDTO(*org, true)
+	c.JSON(http.StatusCreated, orgDTO)
 }
 
-// ListOrganizations returns all organizations the user is a member of
+// ListOrganizations returns all organizations the user belongs to.
 func (h *OrganizationHandler) ListOrganizations(c *gin.Context) {
 	userID, exists := middleware.GetUserID(c)
 	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
+		apierrors.Unauthorized(c, "Not authenticated")
 		return
 	}
 
-	var memberships []models.OrganizationMember
-	if err := database.GetDB().
-		Preload("Organization").
-		Where("user_id = ?", userID).
-		Find(&memberships).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch organizations"})
+	memberships, err := h.orgService.ListOrganizationsForUser(userID)
+	if err != nil {
+		respondOrganizationError(c, err, "Failed to fetch organizations")
 		return
 	}
 
-	// Extract organizations with role
-	type OrgWithRole struct {
-		models.Organization
-		Role models.OrganizationRole `json:"role"`
-	}
-
-	orgsWithRole := make([]OrgWithRole, len(memberships))
-	for i, m := range memberships {
-		orgsWithRole[i] = OrgWithRole{
-			Organization: m.Organization,
-			Role:         m.Role,
-		}
+	orgs := make([]dto.OrganizationWithRoleDTO, len(memberships))
+	for i, membership := range memberships {
+		orgs[i] = dto.ToOrganizationWithRoleDTO(membership)
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"organizations": orgsWithRole,
+		"organizations": orgs,
 	})
 }
 
-// GetOrganization returns organization details
+// GetOrganization returns organization details including members.
 func (h *OrganizationHandler) GetOrganization(c *gin.Context) {
-	// Organization is already loaded by RequireOrganizationAccess middleware
-	orgInterface, _ := c.Get("organization")
-	org := orgInterface.(models.Organization)
-
-	memberInterface, _ := c.Get("organization_member")
-	member := memberInterface.(models.OrganizationMember)
-
-	// Load members
-	var members []models.OrganizationMember
-	database.GetDB().
-		Preload("User").
-		Where("organization_id = ?", org.ID).
-		Find(&members)
-
-	c.JSON(http.StatusOK, gin.H{
-		"organization": org,
-		"members":      members,
-		"your_role":    member.Role,
-	})
-}
-
-// UpdateOrganization updates organization name
-func (h *OrganizationHandler) UpdateOrganization(c *gin.Context) {
-	orgInterface, exists := c.Get("organization")
-	if !exists {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Organization not found in context"})
+	org, ok := getOrganizationFromContext(c)
+	if !ok {
+		apierrors.InternalError(c, "Organization not found in context")
 		return
 	}
 
-	org, ok := orgInterface.(models.Organization)
+	member, ok := getOrganizationMemberFromContext(c)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to get organization"})
+		apierrors.InternalError(c, "Organization member not found in context")
+		return
+	}
+
+	orgModel, members, err := h.orgService.GetOrganizationWithMembers(org.ID)
+	if err != nil {
+		respondOrganizationError(c, err, "Failed to fetch organization")
+		return
+	}
+
+	detail := dto.ToOrganizationDetailDTO(*orgModel, members, member.Role)
+	c.JSON(http.StatusOK, detail)
+}
+
+// UpdateOrganization updates organization attributes (currently name).
+func (h *OrganizationHandler) UpdateOrganization(c *gin.Context) {
+	org, ok := getOrganizationFromContext(c)
+	if !ok {
+		apierrors.InternalError(c, "Organization not found in context")
 		return
 	}
 
@@ -148,39 +119,30 @@ func (h *OrganizationHandler) UpdateOrganization(c *gin.Context) {
 
 	var req UpdateOrgRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		apierrors.BadRequest(c, "Invalid request body")
 		return
 	}
 
-	org.Name = req.Name
-	if err := database.GetDB().Save(&org).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update organization"})
+	updatedOrg, err := h.orgService.UpdateOrganizationName(org.ID, req.Name)
+	if err != nil {
+		respondOrganizationError(c, err, "Failed to update organization")
 		return
 	}
 
-	c.JSON(http.StatusOK, org)
+	orgDTO := dto.ToOrganizationDTO(*updatedOrg, true)
+	c.JSON(http.StatusOK, orgDTO)
 }
 
-// DeleteOrganization deletes an organization
+// DeleteOrganization deletes an organization.
 func (h *OrganizationHandler) DeleteOrganization(c *gin.Context) {
-	orgInterface, _ := c.Get("organization")
-	org := orgInterface.(models.Organization)
-
-	// Delete all tasks in the organization
-	if err := database.GetDB().Where("organization_id = ?", org.ID).Delete(&models.Task{}).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete organization tasks"})
+	org, ok := getOrganizationFromContext(c)
+	if !ok {
+		apierrors.InternalError(c, "Organization not found in context")
 		return
 	}
 
-	// Delete all members
-	if err := database.GetDB().Where("organization_id = ?", org.ID).Delete(&models.OrganizationMember{}).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete organization members"})
-		return
-	}
-
-	// Delete organization
-	if err := database.GetDB().Delete(&org).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete organization"})
+	if err := h.orgService.DeleteOrganization(org.ID); err != nil {
+		respondOrganizationError(c, err, "Failed to delete organization")
 		return
 	}
 
@@ -189,11 +151,11 @@ func (h *OrganizationHandler) DeleteOrganization(c *gin.Context) {
 	})
 }
 
-// JoinOrganization allows a user to join via invite code
+// JoinOrganization allows a user to join via invite code.
 func (h *OrganizationHandler) JoinOrganization(c *gin.Context) {
 	userID, exists := middleware.GetUserID(c)
 	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
+		apierrors.Unauthorized(c, "Not authenticated")
 		return
 	}
 
@@ -203,88 +165,108 @@ func (h *OrganizationHandler) JoinOrganization(c *gin.Context) {
 
 	var req JoinRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		apierrors.BadRequest(c, "Invalid request body")
 		return
 	}
 
-	// Find organization by invite code
-	var org models.Organization
-	if err := database.GetDB().Where("invite_code = ?", req.InviteCode).First(&org).Error; err != nil {
-		c.JSON(http.StatusNotFound, gin.H{"error": "Invalid invite code"})
+	org, err := h.orgService.JoinOrganizationByInvite(userID, req.InviteCode)
+	if err != nil {
+		respondOrganizationError(c, err, "Failed to join organization")
 		return
 	}
 
-	// Check if already a member
-	var existing models.OrganizationMember
-	err := database.GetDB().Where("organization_id = ? AND user_id = ?", org.ID, userID).First(&existing).Error
-	if err == nil {
-		c.JSON(http.StatusConflict, gin.H{"error": "Already a member of this organization"})
-		return
-	}
-
-	// Add as member
-	member := models.OrganizationMember{
-		OrganizationID: org.ID,
-		UserID:         userID,
-		Role:           models.RoleMember,
-		JoinedAt:       time.Now(),
-	}
-
-	if err := database.GetDB().Create(&member).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to join organization"})
-		return
-	}
-
+	orgDTO := dto.ToOrganizationDTO(*org, true)
 	c.JSON(http.StatusOK, gin.H{
 		"message":      "Successfully joined organization",
-		"organization": org,
+		"organization": orgDTO,
 	})
 }
 
-// RegenerateInviteCode generates a new invite code for the organization
+// RegenerateInviteCode generates a new invite code for the organization.
 func (h *OrganizationHandler) RegenerateInviteCode(c *gin.Context) {
-	orgInterface, _ := c.Get("organization")
-	org := orgInterface.(models.Organization)
+	org, ok := getOrganizationFromContext(c)
+	if !ok {
+		apierrors.InternalError(c, "Organization not found in context")
+		return
+	}
 
-	// Generate new invite code
-	inviteCode, err := utils.GenerateInviteCode()
+	updatedOrg, err := h.orgService.RegenerateInviteCode(org.ID)
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to generate invite code"})
+		respondOrganizationError(c, err, "Failed to regenerate invite code")
 		return
 	}
 
-	org.InviteCode = inviteCode
-	if err := database.GetDB().Save(&org).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update invite code"})
-		return
-	}
-
-	c.JSON(http.StatusOK, org)
+	orgDTO := dto.ToOrganizationDTO(*updatedOrg, true)
+	c.JSON(http.StatusOK, orgDTO)
 }
 
-// RemoveMember removes a member from the organization
+// RemoveMember removes a member from the organization.
 func (h *OrganizationHandler) RemoveMember(c *gin.Context) {
-	orgInterface, _ := c.Get("organization")
-	org := orgInterface.(models.Organization)
-
-	targetUserID := c.Param("user_id")
-
-	// Cannot remove yourself
-	currentUserID, _ := middleware.GetUserID(c)
-	if targetUserID == string(rune(currentUserID)) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Cannot remove yourself"})
+	org, ok := getOrganizationFromContext(c)
+	if !ok {
+		apierrors.InternalError(c, "Organization not found in context")
 		return
 	}
 
-	// Delete member
-	if err := database.GetDB().
-		Where("organization_id = ? AND user_id = ?", org.ID, targetUserID).
-		Delete(&models.OrganizationMember{}).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to remove member"})
+	userID, exists := middleware.GetUserID(c)
+	if !exists {
+		apierrors.Unauthorized(c, "Not authenticated")
+		return
+	}
+
+	targetUserIDParam := c.Param("user_id")
+	targetID, err := strconv.ParseUint(targetUserIDParam, 10, 64)
+	if err != nil {
+		apierrors.BadRequest(c, "Invalid user ID")
+		return
+	}
+
+	if err := h.orgService.RemoveMember(org.ID, userID, targetID); err != nil {
+		respondOrganizationError(c, err, "Failed to remove member")
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
 		"message": "Member removed successfully",
 	})
+}
+
+func getOrganizationFromContext(c *gin.Context) (models.Organization, bool) {
+	orgInterface, exists := c.Get(constants.ContextKeyOrganization)
+	if !exists {
+		return models.Organization{}, false
+	}
+
+	org, ok := orgInterface.(models.Organization)
+	return org, ok
+}
+
+func getOrganizationMemberFromContext(c *gin.Context) (models.OrganizationMember, bool) {
+	memberInterface, exists := c.Get(constants.ContextKeyOrganizationMember)
+	if !exists {
+		return models.OrganizationMember{}, false
+	}
+
+	member, ok := memberInterface.(models.OrganizationMember)
+	return member, ok
+}
+
+func respondOrganizationError(c *gin.Context, err error, defaultMessage string) {
+	switch {
+	case err == nil:
+		return
+	case errors.Is(err, services.ErrInvalidOrganizationName),
+		errors.Is(err, services.ErrCannotRemoveYourself):
+		apierrors.BadRequest(c, err.Error())
+	case errors.Is(err, services.ErrAlreadyOrganizationMember):
+		apierrors.Conflict(c, err.Error())
+	case errors.Is(err, services.ErrOrganizationNotFound),
+		errors.Is(err, services.ErrOrganizationMemberNotFound),
+		errors.Is(err, services.ErrInvalidInviteCode):
+		apierrors.NotFound(c, err.Error())
+	case errors.Is(err, services.ErrInviteCodeGenerationFailed):
+		apierrors.InternalError(c, err.Error())
+	default:
+		apierrors.InternalError(c, defaultMessage)
+	}
 }

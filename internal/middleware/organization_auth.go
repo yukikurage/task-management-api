@@ -1,11 +1,12 @@
 package middleware
 
 import (
-	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/yukikurage/task-management-api/internal/constants"
 	"github.com/yukikurage/task-management-api/internal/database"
+	apierrors "github.com/yukikurage/task-management-api/internal/errors"
 	"github.com/yukikurage/task-management-api/internal/models"
 )
 
@@ -16,9 +17,7 @@ func RequireOrganizationAccess() gin.HandlerFunc {
 		orgIDStr := c.Param("id")
 		orgID, err := strconv.ParseUint(orgIDStr, 10, 64)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "Invalid organization ID",
-			})
+			apierrors.BadRequest(c, "Invalid organization ID")
 			c.Abort()
 			return
 		}
@@ -26,9 +25,7 @@ func RequireOrganizationAccess() gin.HandlerFunc {
 		// Get current user ID
 		userID, exists := GetUserID(c)
 		if !exists {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Authentication required",
-			})
+			apierrors.Unauthorized(c, "")
 			c.Abort()
 			return
 		}
@@ -36,9 +33,7 @@ func RequireOrganizationAccess() gin.HandlerFunc {
 		// Check if organization exists
 		var org models.Organization
 		if err := database.GetDB().First(&org, orgID).Error; err != nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "Organization not found",
-			})
+			apierrors.NotFound(c, "Organization not found")
 			c.Abort()
 			return
 		}
@@ -48,16 +43,14 @@ func RequireOrganizationAccess() gin.HandlerFunc {
 		err = database.GetDB().Where("organization_id = ? AND user_id = ?", orgID, userID).First(&member).Error
 		if err != nil {
 			// Return 404 instead of 403 to avoid leaking organization existence
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "Organization not found",
-			})
+			apierrors.NotFound(c, "Organization not found")
 			c.Abort()
 			return
 		}
 
 		// Store organization and membership in context
-		c.Set("organization", org)
-		c.Set("organization_member", member)
+		c.Set(constants.ContextKeyOrganization, org)
+		c.Set(constants.ContextKeyOrganizationMember, member)
 		c.Next()
 	}
 }
@@ -66,29 +59,23 @@ func RequireOrganizationAccess() gin.HandlerFunc {
 func RequireOrganizationOwner() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// Get organization member from context (set by RequireOrganizationAccess)
-		memberInterface, exists := c.Get("organization_member")
+		memberInterface, exists := c.Get(constants.ContextKeyOrganizationMember)
 		if !exists {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error": "Organization access required",
-			})
+			apierrors.Forbidden(c, "Organization access required")
 			c.Abort()
 			return
 		}
 
 		member, ok := memberInterface.(models.OrganizationMember)
 		if !ok {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Invalid organization member data",
-			})
+			apierrors.InternalError(c, "Invalid organization member data")
 			c.Abort()
 			return
 		}
 
 		// Check if user is owner
 		if member.Role != models.RoleOwner {
-			c.JSON(http.StatusForbidden, gin.H{
-				"error": "Only organization owners can perform this action",
-			})
+			apierrors.Forbidden(c, "Only organization owners can perform this action")
 			c.Abort()
 			return
 		}

@@ -4,6 +4,7 @@ import (
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/yukikurage/task-management-api/internal/constants"
 )
 
 // PaginationParams holds the pagination parameters
@@ -22,14 +23,14 @@ type PaginationResponse struct {
 
 // GetPaginationParams extracts and validates pagination parameters from the request
 func GetPaginationParams(c *gin.Context) PaginationParams {
-	page, _ := strconv.Atoi(c.DefaultQuery("page", "1"))
-	limit, _ := strconv.Atoi(c.DefaultQuery("limit", "10"))
+	page, _ := strconv.Atoi(c.DefaultQuery("page", strconv.Itoa(constants.MinPageSize)))
+	limit, _ := strconv.Atoi(c.DefaultQuery("limit", strconv.Itoa(constants.DefaultPageSize)))
 
-	if page < 1 {
-		page = 1
+	if page < constants.MinPageSize {
+		page = constants.MinPageSize
 	}
-	if limit < 1 || limit > 100 {
-		limit = 10
+	if limit < constants.MinPageSize || limit > constants.MaxPageSize {
+		limit = constants.DefaultPageSize
 	}
 
 	offset := (page - 1) * limit

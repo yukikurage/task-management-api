@@ -2,289 +2,252 @@ package handlers
 
 import (
 	"context"
-	"fmt"
+	stdErrors "errors"
 	"net/http"
 	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
-	"github.com/yukikurage/task-management-api/internal/database"
+	"github.com/yukikurage/task-management-api/internal/constants"
+	"github.com/yukikurage/task-management-api/internal/dto"
+	apierrors "github.com/yukikurage/task-management-api/internal/errors"
 	"github.com/yukikurage/task-management-api/internal/middleware"
 	"github.com/yukikurage/task-management-api/internal/models"
 	"github.com/yukikurage/task-management-api/internal/services"
 	"github.com/yukikurage/task-management-api/internal/utils"
-	"gorm.io/gorm/clause"
 )
 
+// TaskHandler orchestrates task-related HTTP handlers.
 type TaskHandler struct {
-	aiService *services.AIService
+	taskService *services.TaskService
 }
 
-func NewTaskHandler(aiService *services.AIService) *TaskHandler {
+// NewTaskHandler creates a new TaskHandler.
+func NewTaskHandler(taskService *services.TaskService) *TaskHandler {
 	return &TaskHandler{
-		aiService: aiService,
+		taskService: taskService,
 	}
 }
 
-// ListTasks returns all tasks accessible by the current user
-// Can filter by organization_id
+// ListTasks returns tasks accessible by the current user with optional filtering.
 func (h *TaskHandler) ListTasks(c *gin.Context) {
 	userID, exists := middleware.GetUserID(c)
 	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
+		apierrors.Unauthorized(c, "Not authenticated")
 		return
 	}
 
-	// Get organization filter (optional)
-	organizationIDStr := c.Query("organization_id")
-	var organizationID uint64
-	if organizationIDStr != "" {
+	var orgIDPtr *uint64
+	if organizationIDStr := c.Query("organization_id"); organizationIDStr != "" {
 		orgID, err := strconv.ParseUint(organizationIDStr, 10, 64)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid organization_id"})
+			apierrors.BadRequest(c, "Invalid organization_id")
 			return
 		}
-		organizationID = orgID
-
-		// Verify user is a member of this organization
-		var member models.OrganizationMember
-		if err := database.GetDB().
-			Where("organization_id = ? AND user_id = ?", organizationID, userID).
-			First(&member).Error; err != nil {
-			c.JSON(http.StatusForbidden, gin.H{"error": "You are not a member of this organization"})
-			return
-		}
+		orgIDPtr = &orgID
 	}
 
-	// Get pagination parameters
+	assignedToMe := c.Query("assigned_to_me") == "true"
+	dueToday := c.Query("due_today") == "true"
+	sortByDueDate := c.Query("sort") == "due_date"
+
+	var statusPtr *models.TaskStatus
+	if statusStr := c.Query("status"); statusStr != "" {
+		status := models.TaskStatus(statusStr)
+		if status != models.TaskStatusTodo && status != models.TaskStatusDone {
+			apierrors.BadRequest(c, "Invalid status filter")
+			return
+		}
+		statusPtr = &status
+	}
+
 	params := utils.GetPaginationParams(c)
 
-	// Get organization IDs where user is a member
-	var orgIDs []uint
-	database.GetDB().
-		Model(&models.OrganizationMember{}).
-		Where("user_id = ?", userID).
-		Pluck("organization_id", &orgIDs)
-
-	// Query tasks in user's organizations
-	var tasks []models.Task
-	query := database.GetDB().
-		Preload("Creator").
-		Preload("Organization").
-		Preload("Assignments").
-		Preload("Assignments.User")
-
-	if organizationID != 0 {
-		// Filter by specific organization
-		query = query.Where("organization_id = ?", organizationID)
-	} else {
-		// Get tasks from all user's organizations
-		if len(orgIDs) > 0 {
-			query = query.Where("organization_id IN ?", orgIDs)
-		} else {
-			// User has no organizations, return empty
-			c.JSON(http.StatusOK, gin.H{
-				"tasks": []models.Task{},
-				"pagination": utils.PaginationResponse{
-					Page:  params.Page,
-					Limit: params.Limit,
-					Total: 0,
-				},
-			})
-			return
-		}
-	}
-
-	// Get total count
-	var total int64
-	query.Model(&models.Task{}).Count(&total)
-
-	// Get paginated results
-	if err := query.Scopes(database.Paginate(params)).Find(&tasks).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch tasks"})
-		return
-	}
-
-	c.JSON(http.StatusOK, gin.H{
-		"tasks": tasks,
-		"pagination": utils.PaginationResponse{
-			Page:  params.Page,
-			Limit: params.Limit,
-			Total: total,
-		},
+	tasks, total, err := h.taskService.ListTasks(services.ListTasksInput{
+		UserID:         userID,
+		OrganizationID: orgIDPtr,
+		AssignedToMe:   assignedToMe,
+		DueToday:       dueToday,
+		Status:         statusPtr,
+		SortByDueDate:  sortByDueDate,
+		Page:           params.Page,
+		PageSize:       params.Limit,
 	})
+	if err != nil {
+		switch {
+		case stdErrors.Is(err, services.ErrNotOrganizationMember):
+			apierrors.Forbidden(c, err.Error())
+		default:
+			apierrors.InternalError(c, "Failed to list tasks")
+		}
+		return
+	}
+
+	response := dto.ToTaskListResponse(tasks, params.Page, params.Limit, total)
+	c.JSON(http.StatusOK, response)
 }
 
-// GetTask returns a specific task by ID
-// Task is already loaded with relations by RequireTaskAccess middleware
+// GetTask returns a task by ID.
 func (h *TaskHandler) GetTask(c *gin.Context) {
-	// Get task from context (set by RequireTaskAccess middleware)
-	taskInterface, exists := c.Get("task")
-	if !exists {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Task not found in context"})
-		return
-	}
-
-	task, ok := taskInterface.(models.Task)
+	task, ok := getTaskFromContext(c)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid task data"})
+		apierrors.InternalError(c, "Task not found in context")
 		return
 	}
 
-	c.JSON(http.StatusOK, task)
+	fullTask, err := h.taskService.GetTask(task.ID)
+	if err != nil {
+		respondTaskError(c, err, "Failed to fetch task")
+		return
+	}
+
+	taskDTO := dto.ToTaskDTO(*fullTask)
+	c.JSON(http.StatusOK, taskDTO)
 }
 
-// CreateTask creates a new task
+// CreateTask creates a new task.
 func (h *TaskHandler) CreateTask(c *gin.Context) {
 	userID, exists := middleware.GetUserID(c)
 	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
+		apierrors.Unauthorized(c, "Not authenticated")
 		return
 	}
 
 	type CreateTaskRequest struct {
 		Title          string     `json:"title" binding:"required"`
 		Description    string     `json:"description"`
+		Status         *string    `json:"status"`
 		DueDate        *time.Time `json:"due_date"`
 		OrganizationID uint64     `json:"organization_id" binding:"required"`
 	}
 
 	var req CreateTaskRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		apierrors.BadRequest(c, "Invalid request body")
 		return
 	}
 
-	// Verify user is a member of the organization
-	var member models.OrganizationMember
-	if err := database.GetDB().
-		Where("organization_id = ? AND user_id = ?", req.OrganizationID, userID).
-		First(&member).Error; err != nil {
-		c.JSON(http.StatusForbidden, gin.H{"error": "You are not a member of this organization"})
-		return
+	var status models.TaskStatus
+	if req.Status != nil && *req.Status != "" {
+		status = models.TaskStatus(*req.Status)
+		if status != models.TaskStatusTodo && status != models.TaskStatusDone {
+			apierrors.BadRequest(c, "Invalid status value")
+			return
+		}
 	}
 
-	// Create task
-	task := models.Task{
+	task, err := h.taskService.CreateTask(services.CreateTaskInput{
 		Title:          req.Title,
 		Description:    req.Description,
+		Status:         status,
 		DueDate:        req.DueDate,
-		CreatorID:      userID,
 		OrganizationID: req.OrganizationID,
-	}
-
-	if err := database.GetDB().Create(&task).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create task"})
+		CreatorID:      userID,
+	})
+	if err != nil {
+		respondTaskError(c, err, "Failed to create task")
 		return
 	}
 
-	// Load relations
-	database.GetDB().
-		Preload("Creator").
-		Preload("Organization").
-		First(&task, task.ID)
-
-	c.JSON(http.StatusCreated, task)
+	taskDTO := dto.ToTaskDTO(*task)
+	c.JSON(http.StatusCreated, taskDTO)
 }
 
-// UpdateTask updates an existing task
+// UpdateTask updates an existing task.
 func (h *TaskHandler) UpdateTask(c *gin.Context) {
-	taskInterface, exists := c.Get("task")
-	if !exists {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Task not found in context"})
-		return
-	}
-
-	task, ok := taskInterface.(models.Task)
+	task, ok := getTaskFromContext(c)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid task data"})
+		apierrors.InternalError(c, "Task not found in context")
 		return
 	}
 
-	// Parse raw JSON to detect which fields were sent
-	var rawReq map[string]any
-	if err := c.ShouldBindJSON(&rawReq); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+	var raw map[string]any
+	if err := c.ShouldBindJSON(&raw); err != nil {
+		apierrors.BadRequest(c, "Invalid request body")
 		return
 	}
 
-	// Update only provided fields
-	if title, ok := rawReq["title"]; ok {
-		if titleStr, ok := title.(string); ok {
-			task.Title = titleStr
-		}
+	if len(raw) == 0 {
+		apierrors.BadRequest(c, "No fields to update")
+		return
 	}
-	if description, ok := rawReq["description"]; ok {
-		if descStr, ok := description.(string); ok {
-			task.Description = descStr
+
+	updateInput := services.UpdateTaskInput{}
+
+	if titleVal, exists := raw["title"]; exists {
+		title, ok := titleVal.(string)
+		if !ok {
+			apierrors.BadRequest(c, "Title must be a string")
+			return
 		}
+		updateInput.Title = &title
 	}
-	if _, ok := rawReq["due_date"]; ok {
-		// due_date was provided (might be null)
-		if rawReq["due_date"] == nil {
-			task.DueDate = nil
-		} else if dueDateStr, ok := rawReq["due_date"].(string); ok {
-			parsedTime, err := time.Parse(time.RFC3339, dueDateStr)
-			if err == nil {
-				task.DueDate = &parsedTime
+
+	if descVal, exists := raw["description"]; exists {
+		description, ok := descVal.(string)
+		if !ok {
+			apierrors.BadRequest(c, "Description must be a string")
+			return
+		}
+		updateInput.Description = &description
+	}
+
+	if statusVal, exists := raw["status"]; exists {
+		statusStr, ok := statusVal.(string)
+		if !ok {
+			apierrors.BadRequest(c, "Status must be a string")
+			return
+		}
+		status := models.TaskStatus(statusStr)
+		if status != models.TaskStatusTodo && status != models.TaskStatusDone {
+			apierrors.BadRequest(c, "Invalid status value")
+			return
+		}
+		updateInput.Status = &status
+	}
+
+	if dueVal, exists := raw["due_date"]; exists {
+		if dueVal == nil {
+			updateInput.ClearDueDate = true
+		} else if dueStr, ok := dueVal.(string); ok {
+			parsed, err := time.Parse(time.RFC3339, dueStr)
+			if err != nil {
+				apierrors.BadRequest(c, "Invalid due_date format")
+				return
 			}
+			updateInput.DueDate = &parsed
+		} else {
+			apierrors.BadRequest(c, "Invalid due_date value")
+			return
 		}
 	}
 
-	// Save to database
-	if err := database.GetDB().Save(&task).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update task"})
+	updatedTask, err := h.taskService.UpdateTask(task.ID, updateInput)
+	if err != nil {
+		respondTaskError(c, err, "Failed to update task")
 		return
 	}
 
-	// Reload with relations
-	if err := database.GetDB().
-		Preload("Creator").
-		Preload("Organization").
-		Preload("Assignments").
-		Preload("Assignments.User").
-		First(&task, task.ID).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reload task"})
-		return
-	}
-
-	c.JSON(http.StatusOK, task)
+	taskDTO := dto.ToTaskDTO(*updatedTask)
+	c.JSON(http.StatusOK, taskDTO)
 }
 
-// DeleteTask deletes a task
+// DeleteTask deletes a task.
 func (h *TaskHandler) DeleteTask(c *gin.Context) {
 	userID, exists := middleware.GetUserID(c)
 	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
+		apierrors.Unauthorized(c, "Not authenticated")
 		return
 	}
 
-	taskInterface, exists := c.Get("task")
-	if !exists {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Task not found in context"})
-		return
-	}
-
-	task, ok := taskInterface.(models.Task)
+	task, ok := getTaskFromContext(c)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid task data"})
+		apierrors.InternalError(c, "Task not found in context")
 		return
 	}
 
-	// Only creator can delete
-	if task.CreatorID != userID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Only the creator can delete this task"})
-		return
-	}
-
-	// Delete task assignments first
-	if err := database.GetDB().Where("task_id = ?", task.ID).Delete(&models.TaskAssignment{}).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete task assignments"})
-		return
-	}
-
-	if err := database.GetDB().Delete(&task).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to delete task"})
+	if err := h.taskService.DeleteTask(task.ID, userID); err != nil {
+		respondTaskError(c, err, "Failed to delete task")
 		return
 	}
 
@@ -293,181 +256,99 @@ func (h *TaskHandler) DeleteTask(c *gin.Context) {
 	})
 }
 
-// AssignTask assigns users to a task
+// AssignTask assigns users to a task.
 func (h *TaskHandler) AssignTask(c *gin.Context) {
 	userID, exists := middleware.GetUserID(c)
 	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
+		apierrors.Unauthorized(c, "Not authenticated")
 		return
 	}
 
-	// Get current task
-	taskInterface, exists := c.Get("task")
-	if !exists {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Task not found in context"})
-		return
-	}
-
-	task, ok := taskInterface.(models.Task)
+	task, ok := getTaskFromContext(c)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid task data"})
+		apierrors.InternalError(c, "Task not found in context")
 		return
 	}
 
-	type AssignUserRequest struct {
+	type AssignUsersRequest struct {
 		UserIDs []uint64 `json:"user_ids" binding:"required"`
 	}
 
-	// Only creator can assign
-	if task.CreatorID != userID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Only the creator can assign this task"})
-		return
-	}
-
-	// Get request
-	var req AssignUserRequest
+	var req AssignUsersRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		apierrors.BadRequest(c, "Invalid request body")
 		return
 	}
 
-	// Check if array is empty
-	if len(req.UserIDs) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "At least one user ID is required"})
+	if err := h.taskService.AssignUsers(services.AssignUsersInput{
+		TaskID:  task.ID,
+		ActorID: userID,
+		UserIDs: req.UserIDs,
+	}); err != nil {
+		respondTaskError(c, err, "Failed to assign users")
 		return
 	}
 
-	// Verify all users exist
-	var userCount int64
-	database.GetDB().Model(&models.User{}).Where("id IN ?", req.UserIDs).Count(&userCount)
-	if int(userCount) != len(req.UserIDs) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "One or more user IDs do not exist"})
+	updatedTask, err := h.taskService.GetTask(task.ID)
+	if err != nil {
+		respondTaskError(c, err, "Failed to load task assignments")
 		return
 	}
 
-	// Verify all users are members of the organization
-	var memberCount int64
-	database.GetDB().
-		Model(&models.OrganizationMember{}).
-		Where("organization_id = ? AND user_id IN ?", task.OrganizationID, req.UserIDs).
-		Count(&memberCount)
-
-	if int(memberCount) != len(req.UserIDs) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "One or more users are not members of this organization"})
-		return
-	}
-
-	// Create task assignments
-	var taskAssignments []models.TaskAssignment
-	for _, uid := range req.UserIDs {
-		taskAssignments = append(taskAssignments, models.TaskAssignment{
-			TaskID: task.ID,
-			UserID: uid,
-		})
-	}
-
-	if err := database.GetDB().
-		Clauses(clause.OnConflict{DoNothing: true}).
-		Create(&taskAssignments).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to assign users to task"})
-		return
-	}
-
-	// Reload task with assignments
-	if err := database.GetDB().
-		Preload("Assignments").
-		Preload("Assignments.User").
-		First(&task, task.ID).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reload task assignments"})
-		return
-	}
-
+	taskDTO := dto.ToTaskDTO(*updatedTask)
 	c.JSON(http.StatusOK, gin.H{
 		"message":     "Users assigned successfully",
-		"assignments": task.Assignments,
+		"assignments": taskDTO.Assignments,
 	})
 }
 
-// UnassignTask removes user assignments from a task
+// UnassignTask removes users from a task.
 func (h *TaskHandler) UnassignTask(c *gin.Context) {
 	userID, exists := middleware.GetUserID(c)
 	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
+		apierrors.Unauthorized(c, "Not authenticated")
 		return
 	}
 
-	// Get current task
-	taskInterface, exists := c.Get("task")
-	if !exists {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Task not found in context"})
-		return
-	}
-
-	task, ok := taskInterface.(models.Task)
+	task, ok := getTaskFromContext(c)
 	if !ok {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid task data"})
+		apierrors.InternalError(c, "Task not found in context")
 		return
 	}
 
-	type AssignUserRequest struct {
+	type UnassignUsersRequest struct {
 		UserIDs []uint64 `json:"user_ids" binding:"required"`
 	}
 
-	// Only creator can unassign
-	if task.CreatorID != userID {
-		c.JSON(http.StatusForbidden, gin.H{"error": "Only the creator can unassign from this task"})
-		return
-	}
-
-	// Get request
-	var req AssignUserRequest
+	var req UnassignUsersRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		apierrors.BadRequest(c, "Invalid request body")
 		return
 	}
 
-	// Check if array is empty
-	if len(req.UserIDs) == 0 {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "At least one user ID is required"})
+	if err := h.taskService.UnassignUsers(task.ID, userID, req.UserIDs); err != nil {
+		respondTaskError(c, err, "Failed to unassign users")
 		return
 	}
 
-	// Verify all users exist
-	var userCount int64
-	database.GetDB().Model(&models.User{}).Where("id IN ?", req.UserIDs).Count(&userCount)
-	if int(userCount) != len(req.UserIDs) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "One or more user IDs do not exist"})
+	updatedTask, err := h.taskService.GetTask(task.ID)
+	if err != nil {
+		respondTaskError(c, err, "Failed to load task assignments")
 		return
 	}
 
-	// Delete task assignments
-	if err := database.GetDB().
-		Where("task_id = ? AND user_id IN ?", task.ID, req.UserIDs).
-		Delete(&models.TaskAssignment{}).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to unassign users from task"})
-		return
-	}
-
-	// Reload task with assignments
-	if err := database.GetDB().
-		Preload("Assignments").
-		Preload("Assignments.User").
-		First(&task, task.ID).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reload task assignments"})
-		return
-	}
-
+	taskDTO := dto.ToTaskDTO(*updatedTask)
 	c.JSON(http.StatusOK, gin.H{
 		"message":     "Users unassigned successfully",
-		"assignments": task.Assignments,
+		"assignments": taskDTO.Assignments,
 	})
 }
 
-// GenerateTasks generates task suggestions from text using AI
+// GenerateTasks generates tasks via AI.
 func (h *TaskHandler) GenerateTasks(c *gin.Context) {
 	userID, exists := middleware.GetUserID(c)
 	if !exists {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": "Not authenticated"})
+		apierrors.Unauthorized(c, "Not authenticated")
 		return
 	}
 
@@ -478,34 +359,91 @@ func (h *TaskHandler) GenerateTasks(c *gin.Context) {
 
 	var req GenerateTasksRequest
 	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request body"})
+		apierrors.BadRequest(c, "Invalid request body")
 		return
 	}
 
-	// Verify user is a member of the organization
-	var member models.OrganizationMember
-	if err := database.GetDB().
-		Where("organization_id = ? AND user_id = ?", req.OrganizationID, userID).
-		First(&member).Error; err != nil {
-		c.JSON(http.StatusForbidden, gin.H{"error": "You are not a member of this organization"})
-		return
-	}
+	ctx, cancel := context.WithTimeout(context.Background(), constants.AIRequestTimeout)
+	defer cancel()
 
-	// Check if AI service is available
-	if h.aiService == nil {
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "AI service is not configured. Please set OPENAI_API_KEY environment variable."})
-		return
-	}
-
-	// Generate tasks using AI
-	ctx := context.Background()
-	generatedTasks, err := h.aiService.GenerateTasksFromText(ctx, req.Text)
+	tasks, err := h.taskService.GenerateTasks(ctx, services.GenerateTasksInput{
+		Text:           req.Text,
+		OrganizationID: req.OrganizationID,
+		CreatorID:      userID,
+	})
 	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("Failed to generate tasks: %v", err)})
+		respondTaskError(c, err, "Failed to generate tasks")
+		return
+	}
+
+	taskDTOs := make([]dto.TaskDTO, len(tasks))
+	for i, task := range tasks {
+		taskDTOs[i] = dto.ToTaskDTO(task)
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"tasks": taskDTOs,
+	})
+}
+
+// ToggleTaskStatus toggles the task status between TODO and DONE.
+func (h *TaskHandler) ToggleTaskStatus(c *gin.Context) {
+	userID, exists := middleware.GetUserID(c)
+	if !exists {
+		apierrors.Unauthorized(c, "Not authenticated")
+		return
+	}
+
+	task, ok := getTaskFromContext(c)
+	if !ok {
+		apierrors.InternalError(c, "Task not found in context")
+		return
+	}
+
+	updatedTask, err := h.taskService.ToggleTaskStatus(task.ID, userID)
+	if err != nil {
+		respondTaskError(c, err, "Failed to toggle task status")
 		return
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"tasks": generatedTasks,
+		"message": "Task status updated successfully",
+		"status":  updatedTask.Status,
 	})
+}
+
+// getTaskFromContext retrieves the task stored by middleware.
+func getTaskFromContext(c *gin.Context) (models.Task, bool) {
+	taskInterface, exists := c.Get(constants.ContextKeyTask)
+	if !exists {
+		return models.Task{}, false
+	}
+
+	task, ok := taskInterface.(models.Task)
+	return task, ok
+}
+
+// respondTaskError maps domain errors to API responses.
+func respondTaskError(c *gin.Context, err error, defaultMessage string) {
+	switch {
+	case stdErrors.Is(err, services.ErrNotOrganizationMember):
+		apierrors.Forbidden(c, err.Error())
+	case stdErrors.Is(err, services.ErrTaskNotFound):
+		apierrors.NotFound(c, err.Error())
+	case stdErrors.Is(err, services.ErrNotTaskCreator):
+		apierrors.Forbidden(c, err.Error())
+	case stdErrors.Is(err, services.ErrTaskPermissionDenied):
+		apierrors.Forbidden(c, err.Error())
+	case stdErrors.Is(err, services.ErrTitleRequired),
+		stdErrors.Is(err, services.ErrTitleEmpty),
+		stdErrors.Is(err, services.ErrInvalidTaskAssignee),
+		stdErrors.Is(err, services.ErrNoUserIDsProvided),
+		stdErrors.Is(err, services.ErrAINoTasksGenerated),
+		stdErrors.Is(err, services.ErrAINoValidTasks):
+		apierrors.BadRequest(c, err.Error())
+	case stdErrors.Is(err, services.ErrAIServiceNotConfigured):
+		apierrors.ServiceUnavailable(c, err.Error())
+	default:
+		apierrors.InternalError(c, defaultMessage)
+	}
 }

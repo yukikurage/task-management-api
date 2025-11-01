@@ -37,16 +37,11 @@ services:
     restart: always
     ports:
       - "8080:8080"
+    env_file:
+      - .env
     environment:
       DB_HOST: mysql
-      DB_PORT: 3306
-      DB_USER: taskuser
-      DB_PASSWORD: taskpassword
-      DB_NAME: task_management
       REDIS_HOST: redis
-      REDIS_PORT: 6379
-      SESSION_SECRET: your-secret-key-change-in-production
-      GIN_MODE: debug
     depends_on:
       mysql:
         condition: service_healthy

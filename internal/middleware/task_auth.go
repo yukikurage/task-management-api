@@ -1,11 +1,12 @@
 package middleware
 
 import (
-	"net/http"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
+	"github.com/yukikurage/task-management-api/internal/constants"
 	"github.com/yukikurage/task-management-api/internal/database"
+	apierrors "github.com/yukikurage/task-management-api/internal/errors"
 	"github.com/yukikurage/task-management-api/internal/models"
 )
 
@@ -17,9 +18,7 @@ func RequireTaskAccess() gin.HandlerFunc {
 		taskIDStr := c.Param("id")
 		taskID, err := strconv.ParseUint(taskIDStr, 10, 64)
 		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{
-				"error": "Invalid task ID",
-			})
+			apierrors.BadRequest(c, "Invalid task ID")
 			c.Abort()
 			return
 		}
@@ -27,24 +26,15 @@ func RequireTaskAccess() gin.HandlerFunc {
 		// Get current user ID
 		userID, exists := GetUserID(c)
 		if !exists {
-			c.JSON(http.StatusUnauthorized, gin.H{
-				"error": "Authentication required",
-			})
+			apierrors.Unauthorized(c, "")
 			c.Abort()
 			return
 		}
 
-		// Check if task exists and load relations
+		// Check if task exists (minimal data for authorization check)
 		var task models.Task
-		if err := database.GetDB().
-			Preload("Creator").
-			Preload("Organization").
-			Preload("Assignments").
-			Preload("Assignments.User").
-			First(&task, taskID).Error; err != nil {
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "Task not found",
-			})
+		if err := database.GetDB().First(&task, taskID).Error; err != nil {
+			apierrors.NotFound(c, "Task not found")
 			c.Abort()
 			return
 		}
@@ -56,14 +46,12 @@ func RequireTaskAccess() gin.HandlerFunc {
 			First(&member).Error
 		if err != nil {
 			// Return 404 instead of 403 to avoid leaking task existence
-			c.JSON(http.StatusNotFound, gin.H{
-				"error": "Task not found",
-			})
+			apierrors.NotFound(c, "Task not found")
 			c.Abort()
 			return
 		}
 
-		c.Set("task", task)
+		c.Set(constants.ContextKeyTask, task)
 		c.Next()
 	}
 }

@@ -59,13 +59,14 @@ paths:
             schema:
               type: object
               required:
-                - email
+                - username
                 - password
               properties:
-                email:
+                username:
                   type: string
-                  format: email
-                  example: user@example.com
+                  minLength: 3
+                  maxLength: 50
+                  example: johndoe
                 password:
                   type: string
                   format: password
@@ -85,7 +86,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "409":
-          description: Email already exists
+          description: Username already exists
           content:
             application/json:
               schema:
@@ -106,13 +107,12 @@ paths:
             schema:
               type: object
               required:
-                - email
+                - username
                 - password
               properties:
-                email:
+                username:
                   type: string
-                  format: email
-                  example: user@example.com
+                  example: johndoe
                 password:
                   type: string
                   format: password
@@ -136,7 +136,7 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
         "401":
-          description: Invalid email or password
+          description: Invalid username or password
           content:
             application/json:
               schema:
@@ -342,18 +342,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  organization:
-                    $ref: "#/components/schemas/Organization"
-                  members:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/OrganizationMember"
-                  your_role:
-                    type: string
-                    enum: [owner, member]
-                    example: owner
+                $ref: "#/components/schemas/OrganizationDetail"
         "401":
           description: Not authenticated
           content:
@@ -592,6 +581,30 @@ paths:
           schema:
             type: integer
             format: int64
+        - name: assigned_to_me
+          in: query
+          description: Filter tasks assigned to the current user
+          schema:
+            type: boolean
+            default: false
+        - name: due_today
+          in: query
+          description: Filter tasks due today
+          schema:
+            type: boolean
+            default: false
+        - name: status
+          in: query
+          description: Filter tasks by status (TODO or DONE)
+          schema:
+            type: string
+            enum: [TODO, DONE]
+        - name: sort
+          in: query
+          description: Sort order. Use 'due_date' to sort by due date (nearest first, NULL last). Default is by created_at descending.
+          schema:
+            type: string
+            enum: [due_date]
         - name: page
           in: query
           description: Page number
@@ -613,14 +626,7 @@ paths:
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  tasks:
-                    type: array
-                    items:
-                      $ref: "#/components/schemas/Task"
-                  pagination:
-                    $ref: "#/components/schemas/Pagination"
+                $ref: "#/components/schemas/TaskListResponse"
         "401":
           description: Not authenticated
           content:
@@ -681,6 +687,69 @@ paths:
                 $ref: "#/components/schemas/Error"
         "403":
           description: You are not a member of this organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
+  /api/tasks/generate:
+    post:
+      tags:
+        - Tasks
+      summary: Generate task suggestions using AI
+      description: Generate task suggestions from text using OpenAI
+      operationId: generateTasks
+      security:
+        - cookieAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required:
+                - text
+                - organization_id
+              properties:
+                text:
+                  type: string
+                  example: "プロジェクトの要件定義を作成し、チームメンバーに共有する。来週までにデザインモックアップを完成させる。"
+                organization_id:
+                  type: integer
+                  format: int64
+                  example: 1
+      responses:
+        "200":
+          description: Tasks generated successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/Task"
+        "400":
+          description: Invalid request body
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: You are not a member of this organization
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "503":
+          description: AI service is not configured
           content:
             application/json:
               schema:
@@ -885,7 +954,15 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Task"
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Users assigned successfully
+                  assignments:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TaskAssignment"
         "400":
           description: Invalid request body
           content:
@@ -949,7 +1026,15 @@ paths:
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Task"
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Users unassigned successfully
+                  assignments:
+                    type: array
+                    items:
+                      $ref: "#/components/schemas/TaskAssignment"
         "400":
           description: Invalid request body
           content:
@@ -975,6 +1060,57 @@ paths:
               schema:
                 $ref: "#/components/schemas/Error"
 
+  /api/tasks/{id}/toggle-status:
+    post:
+      tags:
+        - Tasks
+      summary: Toggle task status
+      description: Toggle task status between TODO and DONE (only creator or assigned users can toggle)
+      operationId: toggleTaskStatus
+      security:
+        - cookieAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: Task ID
+          schema:
+            type: integer
+            format: int64
+      responses:
+        "200":
+          description: Task status toggled successfully
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  message:
+                    type: string
+                    example: Task status updated successfully
+                  status:
+                    type: string
+                    enum: [TODO, DONE]
+                    example: DONE
+        "401":
+          description: Not authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "403":
+          description: Only creator or assigned users can toggle status
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "404":
+          description: Task not found
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+
 components:
   securitySchemes:
     cookieAuth:
@@ -987,7 +1123,7 @@ components:
       type: object
       required:
         - id
-        - email
+        - username
         - created_at
         - updated_at
       properties:
@@ -995,10 +1131,11 @@ components:
           type: integer
           format: int64
           example: 1
-        email:
+        username:
           type: string
-          format: email
-          example: user@example.com
+          minLength: 3
+          maxLength: 50
+          example: johndoe
         created_at:
           type: string
           format: date-time
@@ -1013,9 +1150,6 @@ components:
       required:
         - id
         - name
-        - invite_code
-        - created_at
-        - updated_at
       properties:
         id:
           type: integer
@@ -1027,14 +1161,6 @@ components:
         invite_code:
           type: string
           example: "5dc6-6411-e229"
-        created_at:
-          type: string
-          format: date-time
-          example: 2025-01-01T00:00:00Z
-        updated_at:
-          type: string
-          format: date-time
-          example: 2025-01-01T00:00:00Z
 
     OrganizationWithRole:
       allOf:
@@ -1051,19 +1177,12 @@ components:
     OrganizationMember:
       type: object
       required:
-        - organization_id
-        - user_id
+        - user
         - role
         - joined_at
       properties:
-        organization_id:
-          type: integer
-          format: int64
-          example: 1
-        user_id:
-          type: integer
-          format: int64
-          example: 2
+        user:
+          $ref: "#/components/schemas/User"
         role:
           type: string
           enum: [owner, member]
@@ -1072,9 +1191,23 @@ components:
           type: string
           format: date-time
           example: 2025-01-01T00:00:00Z
-        user:
-          description: User object (only included when explicitly loaded)
-          $ref: "#/components/schemas/User"
+
+    OrganizationDetail:
+      allOf:
+        - $ref: "#/components/schemas/Organization"
+        - type: object
+          required:
+            - members
+            - your_role
+          properties:
+            members:
+              type: array
+              items:
+                $ref: "#/components/schemas/OrganizationMember"
+            your_role:
+              type: string
+              enum: [owner, member]
+              example: owner
 
     Task:
       type: object
@@ -1082,6 +1215,7 @@ components:
         - id
         - title
         - description
+        - status
         - creator_id
         - organization_id
         - created_at
@@ -1097,6 +1231,11 @@ components:
         description:
           type: string
           example: Write comprehensive API documentation
+        status:
+          type: string
+          enum: [TODO, DONE]
+          example: TODO
+          description: Task completion status
         due_date:
           type: string
           format: date-time
@@ -1134,25 +1273,77 @@ components:
     TaskAssignment:
       type: object
       required:
-        - task_id
-        - user_id
+        - user
+      properties:
+        user:
+          $ref: "#/components/schemas/User"
+
+    TaskListItem:
+      type: object
+      required:
+        - id
+        - title
+        - description
+        - status
+        - creator_id
         - created_at
       properties:
-        task_id:
+        id:
           type: integer
           format: int64
           example: 1
-        user_id:
+        title:
+          type: string
+          example: Complete project documentation
+        description:
+          type: string
+          example: Write comprehensive API documentation
+        status:
+          type: string
+          enum: [TODO, DONE]
+          example: TODO
+        due_date:
+          type: string
+          format: date-time
+          nullable: true
+          example: 2025-12-31T23:59:59Z
+        creator_id:
           type: integer
           format: int64
-          example: 2
+          example: 1
+        creator:
+          $ref: "#/components/schemas/User"
         created_at:
           type: string
           format: date-time
           example: 2025-01-01T00:00:00Z
-        user:
-          description: User object (only included when explicitly loaded)
-          $ref: "#/components/schemas/User"
+
+    TaskListResponse:
+      type: object
+      required:
+        - tasks
+        - page
+        - page_size
+        - total_count
+        - total_pages
+      properties:
+        tasks:
+          type: array
+          items:
+            $ref: "#/components/schemas/TaskListItem"
+        page:
+          type: integer
+          example: 1
+        page_size:
+          type: integer
+          example: 20
+        total_count:
+          type: integer
+          format: int64
+          example: 42
+        total_pages:
+          type: integer
+          example: 3
 
     Pagination:
       type: object
