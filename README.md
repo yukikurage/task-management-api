@@ -30,3 +30,13 @@
 - `POST /tasks/:id/unassign` — タスクからユーザーのアサインを解除する
 - `POST /tasks/:id/toggle-status` — TODO/DONE のステータスを切り替える
 - `POST /tasks/generate` — AI でタスク候補を生成する（保存はフロントエンド側で実行する必要がある）
+
+### 組織
+
+- `GET /organizations` — 自分が所属している組織一覧を取得する
+- `POST /organizations` — 新しい組織を作成する
+- `DELETE /organizations` — 組織を削除する（作成者のみ）
+- `GET /organizations/:id` — 単一組織の詳細を取得する
+- `POST /organizations/:id/regenerate-code` — 招待コードを新規に発行する
+- `POST /organizations/join` — 招待コードを使って組織に参加する
+- `DELETE /organizations/:id/members/:userId` — メンバーを組織から削除する（作成者のみ）

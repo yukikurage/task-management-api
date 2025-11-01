@@ -238,10 +238,6 @@ func (s *TaskService) AssignUsers(input AssignUsersInput) error {
 		return fmt.Errorf("failed to find task: %w", err)
 	}
 
-	if task.CreatorID != input.ActorID {
-		return ErrNotTaskCreator
-	}
-
 	userIDs := uniqueUint64(input.UserIDs)
 
 	count, err := s.taskRepo.CountUsersByIDs(userIDs, task.OrganizationID)
@@ -265,16 +261,12 @@ func (s *TaskService) UnassignUsers(taskID, actorID uint64, userIDs []uint64) er
 		return ErrNoUserIDsProvided
 	}
 
-	task, err := s.taskRepo.FindByID(taskID)
+	_, err := s.taskRepo.FindByID(taskID)
 	if err != nil {
 		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return ErrTaskNotFound
 		}
 		return fmt.Errorf("failed to find task: %w", err)
-	}
-
-	if task.CreatorID != actorID {
-		return ErrNotTaskCreator
 	}
 
 	uniqueIDs := uniqueUint64(userIDs)
