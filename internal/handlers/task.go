@@ -376,13 +376,8 @@ func (h *TaskHandler) GenerateTasks(c *gin.Context) {
 		return
 	}
 
-	taskDTOs := make([]dto.TaskDTO, len(tasks))
-	for i, task := range tasks {
-		taskDTOs[i] = dto.ToTaskDTO(task)
-	}
-
 	c.JSON(http.StatusOK, gin.H{
-		"tasks": taskDTOs,
+		"tasks": tasks,
 	})
 }
 

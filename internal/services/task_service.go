@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/yukikurage/task-management-api/internal/constants"
@@ -13,17 +14,17 @@ import (
 )
 
 var (
-	ErrNotOrganizationMember = errors.New("user is not a member of the organization")
-	ErrTaskNotFound          = errors.New("task not found")
-	ErrNotTaskCreator        = errors.New("only the task creator can perform this action")
-	ErrTaskPermissionDenied  = errors.New("user does not have permission to modify this task")
-	ErrNoUserIDsProvided     = errors.New("at least one user ID is required")
-	ErrTitleRequired         = errors.New("title is required")
-	ErrTitleEmpty            = errors.New("title cannot be empty")
-	ErrInvalidTaskAssignee   = errors.New("one or more users do not exist or are not members of the organization")
+	ErrNotOrganizationMember  = errors.New("user is not a member of the organization")
+	ErrTaskNotFound           = errors.New("task not found")
+	ErrNotTaskCreator         = errors.New("only the task creator can perform this action")
+	ErrTaskPermissionDenied   = errors.New("user does not have permission to modify this task")
+	ErrNoUserIDsProvided      = errors.New("at least one user ID is required")
+	ErrTitleRequired          = errors.New("title is required")
+	ErrTitleEmpty             = errors.New("title cannot be empty")
+	ErrInvalidTaskAssignee    = errors.New("one or more users do not exist or are not members of the organization")
 	ErrAIServiceNotConfigured = errors.New("AI service is not configured")
-	ErrAINoTasksGenerated    = errors.New("AI did not generate any tasks")
-	ErrAINoValidTasks        = errors.New("no valid tasks could be created from AI output")
+	ErrAINoTasksGenerated     = errors.New("AI did not generate any tasks")
+	ErrAINoValidTasks         = errors.New("no valid tasks could be created from AI output")
 )
 
 // TaskService handles task business logic
@@ -330,7 +331,7 @@ type GenerateTasksInput struct {
 }
 
 // GenerateTasks uses AI to generate tasks from text
-func (s *TaskService) GenerateTasks(ctx context.Context, input GenerateTasksInput) ([]models.Task, error) {
+func (s *TaskService) GenerateTasks(ctx context.Context, input GenerateTasksInput) ([]GeneratedTask, error) {
 	if s.aiService == nil {
 		return nil, ErrAIServiceNotConfigured
 	}
@@ -351,38 +352,27 @@ func (s *TaskService) GenerateTasks(ctx context.Context, input GenerateTasksInpu
 		return nil, fmt.Errorf("AI generated too many tasks (max %d)", constants.MaxAIGeneratedTasks)
 	}
 
-	tasks := make([]models.Task, 0, len(aiTasks))
+	validTasks := make([]GeneratedTask, 0, len(aiTasks))
+	cutoff := time.Now().Add(-24 * time.Hour)
 	for _, aiTask := range aiTasks {
-		if aiTask.Title == "" {
+		if strings.TrimSpace(aiTask.Title) == "" {
 			continue
 		}
 
-		task := models.Task{
-			Title:          aiTask.Title,
-			Description:    aiTask.Description,
-			Status:         models.TaskStatusTodo,
-			OrganizationID: input.OrganizationID,
-			CreatorID:      input.CreatorID,
-		}
-
 		if aiTask.DueDate != nil {
-			if !aiTask.DueDate.Before(time.Now().Add(-24 * time.Hour)) {
-				task.DueDate = aiTask.DueDate
+			if aiTask.DueDate.Before(cutoff) {
+				aiTask.DueDate = nil
 			}
 		}
 
-		if err := s.taskRepo.Create(&task); err != nil {
-			return nil, fmt.Errorf("failed to create task: %w", err)
-		}
-
-		tasks = append(tasks, task)
+		validTasks = append(validTasks, aiTask)
 	}
 
-	if len(tasks) == 0 {
+	if len(validTasks) == 0 {
 		return nil, ErrAINoValidTasks
 	}
 
-	return tasks, nil
+	return validTasks, nil
 }
 
 // resolveAccessibleOrganizationIDs returns the organization IDs the user can access
